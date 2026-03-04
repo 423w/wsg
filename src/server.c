@@ -27,9 +27,11 @@ int main() {
     addr.sin_port = htons(PORT);        // 9090 in common.h
     addr.sin_addr.s_addr = INADDR_ANY;  // any interface
 
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     int ret = bind(fd, (struct sockaddr*)&addr, sizeof(addr));
     if (ret < 0){
-        printf("bind failure\n");
+        perror("bind");
         return -1;
     }
     // listen to incoming connections
