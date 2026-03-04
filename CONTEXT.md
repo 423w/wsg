@@ -144,13 +144,41 @@ main (input loop)
 - [x] `server.c` — socket setup, select loop, client registration, message forwarding, disconnect handling
 - [x] `client.c` — connect, username registration, recv thread, input loop in main
 - [x] Local test — two clients successfully exchange messages over localhost
+- [x] `Makefile` — `make` builds both, `make clean` removes binaries, `common.h` listed as dependency
 
 ---
 
 ## Next Iteration
 
-### 1. Makefile
-Add a `Makefile` so non-technical users can build everything with a single `make` command instead of manual gcc invocations.
+### TUI with ncurses
+Decided to use `ncurses` for the client UI. Raw `printf` causes incoming messages to interleave with input prompts, breaking the UX. `ncurses` lets us split the terminal into independent windows so chat output and user input never collide.
+
+**Target layout:**
+```
+┌─────────────┬────────────────────────────┐
+│  contacts   │   [alice]                  │
+│             │                            │
+│ > alice     │   [10:32] bob: hey         │
+│   bob       │   [10:33] alice: what up   │
+│             │                            │
+│             ├────────────────────────────┤
+│             │ > _                        │
+└─────────────┴────────────────────────────┘
+```
+
+**Build order:**
+1. Basic split pane — chat window on top, input line at bottom (replaces current printf flow)
+2. Sticky recipient — once in a chat, stay there until explicitly switched
+3. Local message history — append to `~/.wsg/history/<contact>.log` on send/recv, load on open
+4. Contact list pane — left panel showing known contacts, arrow keys to select
+
+**ncurses key concepts:**
+- `initscr()` / `endwin()` — init and teardown
+- `newwin(h, w, y, x)` — create a window at a position
+- `wprintw(win, ...)` — print into a window
+- `wrefresh(win)` — flush changes to screen
+- `wgetch(win)` — read input from a window
+- Link with `-lncurses`
 
 ### 2. UX — Fix interleaved output
 **Problem:** incoming messages print in the middle of the "to:" / "message:" prompts, breaking the input flow visually. The terminal has no concept of separating the input line from printed output.
