@@ -37,13 +37,17 @@ void *recv_thread (void* arg){
         int bytes = recv(args->fd, &msg, sizeof(Message), 0);
         if (bytes < 1) { // 0 = disconnected, -1 = error
             pthread_mutex_lock(&screen_mutex); // lock b4 printing to screen
+            wattron(chat_win, COLOR_PAIR(3) | A_BOLD);
             wprintw(chat_win, "disconnected from server\n"); // print to chat window
+            wattroff(chat_win, COLOR_PAIR(3) | A_BOLD);
             wrefresh(chat_win); // refresh after printing
             pthread_mutex_unlock(&screen_mutex);
             break;
         }
         pthread_mutex_lock(&screen_mutex); // lock b4 printing to screen
+        wattron(chat_win, COLOR_PAIR(2)); // cyan for others
         wprintw(chat_win, "[%s]: %s\n", msg.sender, msg.body);
+        wattroff(chat_win, COLOR_PAIR(2));
         wrefresh(chat_win); // refresh after printing
         pthread_mutex_unlock(&screen_mutex);
     }
@@ -91,6 +95,16 @@ int main(int argc, char* argv[]) {
     cbreak();   // disable line buff
     noecho();   // dont echo
 
+    // initialize color support
+    if (has_colors()) {
+        start_color();
+        // define color pairs: init_pair(pair_number, foreground, background)
+        init_pair(1, COLOR_GREEN, COLOR_BLACK);   // your messages
+        init_pair(2, COLOR_CYAN, COLOR_BLACK);    // their messages
+        init_pair(3, COLOR_YELLOW, COLOR_BLACK);  // system messages
+        init_pair(4, COLOR_MAGENTA, COLOR_BLACK); // chat header
+    }
+
     // build window
     int max_y, max_x;
     getmaxyx(stdscr, max_y, max_x); // term dimensions
@@ -103,7 +117,9 @@ int main(int argc, char* argv[]) {
     scrollok(chat_win, TRUE);
     // border
     box(input_win, 0, 0);
+    wattron(chat_win, COLOR_PAIR(4) | A_BOLD);
     wprintw(chat_win, "Chat: %s -> %s\n", username, current_recipient);
+    wattroff(chat_win, COLOR_PAIR(4) | A_BOLD);
     wprintw(chat_win, "----------------------------------------\n");
     wrefresh(chat_win);
     wrefresh(input_win);
@@ -142,7 +158,9 @@ int main(int argc, char* argv[]) {
 
             pthread_mutex_lock(&screen_mutex);
             werase(chat_win);
+            wattron(chat_win, COLOR_PAIR(4) | A_BOLD);
             wprintw(chat_win, "Chat: %s -> %s\n", username, current_recipient);
+            wattroff(chat_win, COLOR_PAIR(4) | A_BOLD);
             wprintw(chat_win, "----------------------------------------\n");
             wrefresh(chat_win);
             pthread_mutex_unlock(&screen_mutex);
@@ -160,7 +178,9 @@ int main(int argc, char* argv[]) {
         send(fd, &msg, sizeof(Message), 0);
 
         pthread_mutex_lock(&screen_mutex);
+        wattron(chat_win, COLOR_PAIR(1)); // green for you
         wprintw(chat_win, "[you]: %s\n", msg.body);
+        wattroff(chat_win, COLOR_PAIR(1));
         wrefresh(chat_win);
         pthread_mutex_unlock(&screen_mutex);
     }
