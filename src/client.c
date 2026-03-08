@@ -21,12 +21,35 @@ WINDOW *chat_win;       // chat window
 WINDOW *input_win;      // input window
 pthread_mutex_t screen_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// conversation buffer
+// clients will want to message multiple people
+// need some way to maintain message persistence (thru buffer)
+// client side to make server dumb
+typedef struct {
+    char contact_name[32];
+    char messages[100][300];
+    int message_count;
+    int unread_count;
+} Conversation;
+
+// initialize conversation
+Conversation conversations[MAX_CLIENTS];
+int total_conversations = 0;
+char my_username[32];
+
 // thread args, used to pass fd and username into threads
 typedef struct {
     int fd;
     char username[32];
     char *current_recipient;
 } ThreadArgs;
+
+// function prototypes
+Conversation* get_conversation(const char* contact);
+void add_msg_to_buffer(const char* contact, const char* msg);
+void display_conversation(const char* contact);
+void* recv_thread(void* arg);
+
 
 // thread function, runs in the background and prints incoming msgs
 void *recv_thread (void* arg){
@@ -44,14 +67,90 @@ void *recv_thread (void* arg){
             pthread_mutex_unlock(&screen_mutex);
             break;
         }
-        pthread_mutex_lock(&screen_mutex); // lock b4 printing to screen
-        wattron(chat_win, COLOR_PAIR(2)); // cyan for others
-        wprintw(chat_win, "[%s]: %s\n", msg.sender, msg.body);
-        wattroff(chat_win, COLOR_PAIR(2));
-        wrefresh(chat_win); // refresh after printing
-        pthread_mutex_unlock(&screen_mutex);
+
+        char formatted_msg[300];
+        snprintf(formatted_msg, 300, "[%s]: %s", msg.sender, msg.body);
+        add_msg_to_buffer(msg.sender, formatted_msg);
+
+        if (strcmp(msg.sender, args->current_recipient) == 0){
+            pthread_mutex_lock(&screen_mutex); // lock b4 printing to screen
+            wattron(chat_win, COLOR_PAIR(2)); // cyan for others
+            wprintw(chat_win, "[%s]: %s\n", msg.sender, msg.body);
+            wattroff(chat_win, COLOR_PAIR(2));
+            wrefresh(chat_win); // refresh after printing
+            pthread_mutex_unlock(&screen_mutex);
+
+            Conversation* conv = get_conversation(msg.sender);
+            if (conv && conv->unread_count > 0) {
+                conv->unread_count--;
+            }
+        }        
     }
     return NULL;
+}
+
+// get conversation (or make a new one)
+Conversation* get_conversation(const char* contact){
+    for (int i = 0; i < total_conversations; i++){
+        if (strcmp(conversations[i].contact_name, contact) == 0){
+            return &conversations[i]; // conversation found
+        }
+    }
+    // if not found then must make
+    if (total_conversations >= MAX_CLIENTS){
+        return NULL;
+    }
+    Conversation* new_convo = &conversations[total_conversations];
+    strncpy(new_convo->contact_name, contact, 32);
+    new_convo->message_count = 0;
+    new_convo->unread_count = 0;
+    total_conversations++;
+
+    return new_convo;
+}
+
+// add msg to convo buffer
+void add_msg_to_buffer(const char* contact, const char* msg){
+    Conversation* convo = get_conversation(contact);
+    if (!convo){
+        return;
+    }
+    // use circular buffer
+    int i = convo->message_count % 100;
+    strncpy(convo->messages[i], msg, 300);
+    convo->messages[i][299] = 0; // null term
+    convo->message_count++;
+    convo->unread_count++;
+}
+
+// display all msgs from a convo
+void display_conversation(const char* contact) {
+    Conversation* conv = get_conversation(contact);
+    if (!conv) return;
+    
+    pthread_mutex_lock(&screen_mutex);
+    werase(chat_win);
+    
+    // header
+    wattron(chat_win, COLOR_PAIR(4) | A_BOLD);
+    wprintw(chat_win, "Chat: %s -> %s\n", my_username, contact);
+    wattroff(chat_win, COLOR_PAIR(4) | A_BOLD);
+    wprintw(chat_win, "----------------------------------------\n");
+    
+    // display messages (show last 50 or all if less)
+    int start = (conv->message_count > 50) ? (conv->message_count - 50) : 0;
+    int end = conv->message_count;
+    
+    for (int i = start; i < end; i++) {
+        int idx = i % 100;  // circular buffer index
+        wprintw(chat_win, "%s\n", conv->messages[idx]);
+    }
+    
+    wrefresh(chat_win);
+    pthread_mutex_unlock(&screen_mutex);
+    
+    // mark all as read
+    conv->unread_count = 0;
 }
 
 int main(int argc, char* argv[]) {
@@ -76,6 +175,7 @@ int main(int argc, char* argv[]) {
     printf("username: ");
     fgets(username, 32, stdin);
     username[strcspn(username, "\n")] = 0;
+    strncpy(my_username, username, 32);
 
     // choose chat partner
     char current_recipient[32];
@@ -89,6 +189,13 @@ int main(int argc, char* argv[]) {
     strncpy(registration.sender, username, 32);
     send(fd, &registration, sizeof(Message), 0);
 
+    // initialize convo tracking
+    total_conversations = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        conversations[i].message_count = 0;
+        conversations[i].unread_count = 0;
+        memset(conversations[i].contact_name, 0, 32);
+    }
 
     // initialize ncurses
     initscr();
@@ -117,12 +224,10 @@ int main(int argc, char* argv[]) {
     scrollok(chat_win, TRUE);
     // border
     box(input_win, 0, 0);
-    wattron(chat_win, COLOR_PAIR(4) | A_BOLD);
-    wprintw(chat_win, "Chat: %s -> %s\n", username, current_recipient);
-    wattroff(chat_win, COLOR_PAIR(4) | A_BOLD);
-    wprintw(chat_win, "----------------------------------------\n");
-    wrefresh(chat_win);
     wrefresh(input_win);
+
+    // display initial conversation (will be empty at first)
+    display_conversation(current_recipient);
 
 
     // pack threadargs
@@ -140,12 +245,31 @@ int main(int argc, char* argv[]) {
         pthread_mutex_lock(&screen_mutex);
         werase(input_win);
         box(input_win, 0, 0);
-        mvwprintw(input_win, 1, 2, "> ");
+
+        // count total unread messages from all conversations
+        int total_unread = 0;
+        for (int i = 0; i < total_conversations; i++) {
+            // dont count unreads from current conversation
+            if (strcmp(conversations[i].contact_name, current_recipient) != 0) {
+                total_unread += conversations[i].unread_count;
+            }
+        }
+
+        // show notification if there are unread messages
+        int cursor_col;
+        if (total_unread > 0) {
+            mvwprintw(input_win, 1, 2, "> (%d new) ", total_unread);
+            cursor_col = 2 + 3 + snprintf(NULL, 0, "%d", total_unread) + 6;  // Calculate length
+        } else {
+            mvwprintw(input_win, 1, 2, "> ");
+            cursor_col = 4;
+        }
+
         wrefresh(input_win);
         pthread_mutex_unlock(&screen_mutex);
 
         echo();
-        mvwgetnstr(input_win, 1, 4, input, 255);
+        mvwgetnstr(input_win, 1, cursor_col, input, 255);
         noecho();
 
         if (strlen(input) == 0) {
@@ -156,14 +280,7 @@ int main(int argc, char* argv[]) {
             strncpy(current_recipient, input + 6, 32);
             current_recipient[31] = 0;
 
-            pthread_mutex_lock(&screen_mutex);
-            werase(chat_win);
-            wattron(chat_win, COLOR_PAIR(4) | A_BOLD);
-            wprintw(chat_win, "Chat: %s -> %s\n", username, current_recipient);
-            wattroff(chat_win, COLOR_PAIR(4) | A_BOLD);
-            wprintw(chat_win, "----------------------------------------\n");
-            wrefresh(chat_win);
-            pthread_mutex_unlock(&screen_mutex);
+            display_conversation(current_recipient);
             continue;
         }
         if (strcmp(input, "/quit") == 0) {
@@ -177,12 +294,21 @@ int main(int argc, char* argv[]) {
 
         send(fd, &msg, sizeof(Message), 0);
 
+        char formatted_msg[300];
+        snprintf(formatted_msg, 300, "[you]: %s", msg.body);
+        add_msg_to_buffer(current_recipient, formatted_msg);
+
         pthread_mutex_lock(&screen_mutex);
         wattron(chat_win, COLOR_PAIR(1)); // green for you
-        wprintw(chat_win, "[you]: %s\n", msg.body);
+        wprintw(chat_win, "%s\n", formatted_msg);
         wattroff(chat_win, COLOR_PAIR(1));
         wrefresh(chat_win);
         pthread_mutex_unlock(&screen_mutex);
+
+        Conversation* conv = get_conversation(current_recipient);
+        if (conv && conv->unread_count > 0) {
+            conv->unread_count--;
+        }
     }
     endwin();
     close(fd);
