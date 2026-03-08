@@ -33,10 +33,12 @@ Get a working plaintext messaging MVP running as fast as possible. Two or more t
 
 **Client (`client.c`)**
 - Connects to server via TCP using IP + port passed as command line argument: `./client <server_ip>`
-- On startup: prompts for username, sends it to server as a registration Message
-- Receive thread runs in background blocking on `recv()`, prints incoming messages
-- Input loop runs in main: prompts "to:" and "message:", builds and sends a Message struct
-- Compiled with `-lpthread`
+- On startup: prompts for username and initial recipient, sends registration to server
+- Uses ncurses for split-pane TUI: scrollable chat window (top) and input line (bottom)
+- Receive thread runs in background, prints incoming messages to chat window with thread-safe mutex locks
+- Main thread handles input loop with sticky recipient (use `/chat <name>` to switch, `/quit` to exit)
+- Color-coded messages: green (you), cyan (others), yellow (system), magenta (headers)
+- Compiled with `-lpthread -lncurses`
 
 **Shared Header (`common.h`)**
 - Contains the `Message` struct, `Client` struct, and shared constants
@@ -86,8 +88,14 @@ wsg/
 ### Build
 
 ```bash
-gcc server.c -o server
-gcc client.c -o client -lpthread
+make          # builds both server and client
+make clean    # removes binaries
+```
+
+Manual compilation:
+```bash
+gcc src/server.c -o src/server -Wall -Wextra
+gcc src/client.c -o src/client -Wall -Wextra -lpthread -lncurses
 ```
 
 ---
@@ -120,20 +128,26 @@ main loop using select()
 ```
 startup
   → connect to <server_ip> <port>
-  → prompt username → send to server as a registration Message (only sender filled)
+  → prompt username and initial recipient (before ncurses)
+  → send registration Message to server (only sender filled)
+  → initialize ncurses (initscr, cbreak, noecho, color support)
+  → create chat_win (scrollable) and input_win (3 lines at bottom)
 
 recv_thread (background)
   → loop:
       blocking recv() for Message struct
-      print "[sender]: body"
-      if recv returns <= 0 → print disconnected, exit thread
+      mutex_lock → wprintw to chat_win with color → wrefresh → mutex_unlock
+      if recv returns <= 0 → print "disconnected", exit thread
 
 main (input loop)
   → loop:
-      prompt "to: "
-      prompt "message: "
-      build Message{sender, recipient, body}
-      send() to server
+      draw prompt in input_win with mutex protection
+      mvwgetnstr() to read input
+      if empty → continue (handles resize events)
+      if "/chat <name>" → switch current_recipient, update header
+      if "/quit" → break
+      else → build Message{sender, current_recipient, body}, send(), echo to chat_win
+  → cleanup: endwin(), close(fd), pthread_join()
 ```
 
 ---
@@ -145,58 +159,48 @@ main (input loop)
 - [x] `client.c` — connect, username registration, recv thread, input loop in main
 - [x] Local test — two clients successfully exchange messages over localhost
 - [x] `Makefile` — `make` builds both, `make clean` removes binaries, `common.h` listed as dependency
+- [x] **ncurses TUI** — 2-pane layout (chat window + input line)
+- [x] **Sticky recipient** — ask once at startup, use `/chat <name>` to switch
+- [x] **Color support** — green for your messages, cyan for others, yellow for system messages, magenta for chat header
+- [x] **Thread-safe rendering** — mutex-protected screen updates
+- [x] **Terminal resize handling** — ignores empty input from resize events
 
 ---
 
-## Next Iteration
+## Current Issues & Next Steps
 
-### TUI with ncurses
-Decided to use `ncurses` for the client UI. Raw `printf` causes incoming messages to interleave with input prompts, breaking the UX. `ncurses` lets us split the terminal into independent windows so chat output and user input never collide.
+### 1. Message Delivery Problem (Critical)
+**Problem:** If Alice is chatting with Bob, and Connor sends a message to Alice, Connor's message will appear in Alice's chat window even though she's viewing her conversation with Bob. If Connor's messages don't appear immediately, they get dropped entirely because the server doesn't buffer undelivered messages.
 
-**Target layout:**
-```
-┌─────────────┬────────────────────────────┐
-│  contacts   │   [alice]                  │
-│             │                            │
-│ > alice     │   [10:32] bob: hey         │
-│   bob       │   [10:33] alice: what up   │
-│             │                            │
-│             ├────────────────────────────┤
-│             │ > _                        │
-└─────────────┴────────────────────────────┘
-```
+**Current behavior:**
+- Server forwards messages in real-time only if recipient is connected
+- Client displays ALL incoming messages in current chat window, regardless of sender
+- No message queuing or buffering for busy/offline users
+- Messages from non-active conversations get lost
 
-**Build order:**
-1. Basic split pane — chat window on top, input line at bottom (replaces current printf flow)
-2. Sticky recipient — once in a chat, stay there until explicitly switched
-3. Local message history — append to `~/.wsg/history/<contact>.log` on send/recv, load on open
-4. Contact list pane — left panel showing known contacts, arrow keys to select
+**Requirements:**
+- Server needs minimal message buffering (while staying "dumb" for privacy)
+- Client needs to handle multiple concurrent conversations
+- Undelivered messages shouldn't be dropped
 
-**ncurses key concepts:**
-- `initscr()` / `endwin()` — init and teardown
-- `newwin(h, w, y, x)` — create a window at a position
-- `wprintw(win, ...)` — print into a window
-- `wrefresh(win)` — flush changes to screen
-- `wgetch(win)` — read input from a window
-- Link with `-lncurses`
+**Potential solutions to explore:**
+1. Server-side: Queue messages per user (encrypted, time-limited buffer)
+2. Client-side: Maintain multiple conversation buffers, background notification system
+3. Hybrid: Server holds encrypted messages, client pulls on demand
 
-### 2. UX — Fix interleaved output
-**Problem:** incoming messages print in the middle of the "to:" / "message:" prompts, breaking the input flow visually. The terminal has no concept of separating the input line from printed output.
+### 2. Disconnect message clarity
+When viewing a conversation, disconnect should show `"<username> disconnected"` not generic `"disconnected from server"`
 
-**Goal:** messages should appear clearly above the prompt, and the prompt should stay at the bottom — so typing is never visually interrupted.
+### 3. Message persistence
+Local chat history saved to `~/.wsg/history/<contact>.log` for each conversation (append on send/recv, load on `/chat <name>`)
 
-**Options to explore:**
-- Reprint the prompt after receiving a message (simple, low effort)
-- Use `ncurses` to split the terminal into a chat pane and input pane (clean, more complex)
+### 4. Contact list UI (deferred)
+3-pane layout with contact list on left, arrow key navigation, online status indicators
 
-### 3. Error handling improvements
+### 5. Error handling improvements
 - Handle `send()` failures gracefully
-- Notify sender if recipient not found (server currently silently drops the message)
+- Notify sender if recipient not found (server response mechanism needed)
 - Handle server full (all MAX_CLIENTS slots taken)
-
-### 4. Messaging structure improvements
-- Consider keeping recipient sticky — once you set "to:", don't re-prompt every message
-- Or move to a chat-style input: `@bob hello` syntax to switch recipient inline
 
 ---
 
