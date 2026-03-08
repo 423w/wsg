@@ -1,0 +1,9 @@
+when chatting with someone, if they leave, it says "disconnected from server" when it should say "<recipient> disconnected from server"
+
+message persistence
+
+say alice is chatting with bob. if connor is chatting with alice, connor's messages will show up in alice and bob's message chain.
+if connor is sending messages to alice while she is talking to bob, and they dont show up as they do now, they will get dropped.
+there will need to be some sort of buffering or server management of messages before they get sent.
+i want to have the server be as dumb as possible to support client privacy. however i think i will need the server to hold messages sent but not delivered.
+ive learned about this in my distributed systems class and i want to figure out how im going to manage this moving forward.

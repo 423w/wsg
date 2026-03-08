@@ -11,7 +11,7 @@ server: src/server.c src/common.h
 
 # build client
 client: src/client.c src/common.h
-	$(CC) $(CFLAGS) src/client.c -o src/client -lpthread
+	$(CC) $(CFLAGS) src/client.c -o src/client -lpthread -lncurses
 
 # remove compiled binaries
 clean:
