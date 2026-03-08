@@ -1,9 +1,81 @@
-when chatting with someone, if they leave, it says "disconnected from server" when it should say "<recipient> disconnected from server"
+## Current Status (2026-03-08)
 
-message persistence
+Phase 1: Client-side conversation buffers ✅ COMPLETE
+- Multiple conversation buffers working perfectly
+- Message routing by sender implemented
+- Inline notifications showing unread counts
+- `/chat <name>` switches conversations and loads history
+- All messages preserved during client session
 
-say alice is chatting with bob. if connor is chatting with alice, connor's messages will show up in alice and bob's message chain.
-if connor is sending messages to alice while she is talking to bob, and they dont show up as they do now, they will get dropped.
-there will need to be some sort of buffering or server management of messages before they get sent.
-i want to have the server be as dumb as possible to support client privacy. however i think i will need the server to hold messages sent but not delivered.
-ive learned about this in my distributed systems class and i want to figure out how im going to manage this moving forward.
+## Known Issues / Todos
+
+### HIGH PRIORITY
+
+1. Message Persistence (Phase 2 - NEXT)
+   - Messages lost on client restart (only in RAM)
+   - Need to save to disk: ~/.wsg/chats/<contact>.log
+   - Load history on startup and when switching chats
+   - Format: [timestamp] [sender]: body
+   - Estimated: 2-3 hours
+
+2. Offline Message Delivery (Phase 3)
+   - If recipient offline when message sent, message is dropped by server
+   - Server needs to queue messages temporarily
+   - Defer until encryption (Phase 4) - queue encrypted blobs server can't read
+
+### MEDIUM PRIORITY
+
+3. Enhanced Notifications (Optional UX)
+   - Current: "> (2 new)" shows total unreads
+   - Desired: "connor(2) alice(1)" shows per-sender breakdown
+   - Requires dedicated notification bar (3-window layout)
+   - Current inline notifications work fine, so not critical
+
+4. Disconnect Message Clarity
+   - Current: generic "disconnected from server"
+   - Desired: "<username> disconnected"
+   - Challenge: server doesn't notify which user disconnected
+
+5. Error Handling
+   - Handle send() failures gracefully
+   - Notify sender if recipient not found (server silently drops)
+   - Handle server full (MAX_CLIENTS reached)
+
+### LOW PRIORITY
+
+6. Contact List UI
+   - Sidebar showing all contacts with online/offline status
+   - Requires server-side "who's online" broadcast (protocol change)
+   - Current `/chat` command works fine for now
+
+7. Command Improvements
+   - /help command
+   - /quit confirmation if unreads exist
+   - Command history (up/down arrows)
+
+### FUTURE (Post-Encryption)
+
+8. End-to-End Encryption (Phase 4)
+   - Study Signal Protocol (X3DH + Double Ratchet)
+   - Implement with libsodium
+   - Server queues encrypted blobs for offline users
+   - Major project: ~10-15 hours
+
+9. Advanced Features
+   - Group messaging
+   - File transfer (encrypted)
+   - User authentication
+   - TLS transport security
+   - Multi-device sync
+
+## Architecture Notes
+
+Server Philosophy: Keep it "dumb" for privacy
+- Current: Server is a simple relay (no message storage, no content inspection)
+- Future: Server can queue encrypted blobs it can't read
+- Never: Server should never inspect/store plaintext messages
+
+Client Philosophy: Smart client, all privacy protections client-side
+- Current: Client manages all conversation state, buffering, UI
+- Future: Client handles encryption/decryption, key management
+- Benefit: Server compromise doesn't reveal message contents

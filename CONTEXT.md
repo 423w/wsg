@@ -34,10 +34,15 @@ Get a working plaintext messaging MVP running as fast as possible. Two or more t
 **Client (`client.c`)**
 - Connects to server via TCP using IP + port passed as command line argument: `./client <server_ip>`
 - On startup: prompts for username and initial recipient, sends registration to server
-- Uses ncurses for split-pane TUI: scrollable chat window (top) and input line (bottom)
-- Receive thread runs in background, prints incoming messages to chat window with thread-safe mutex locks
+- Uses ncurses for 2-pane TUI: scrollable chat window (top) and input line with inline notifications (bottom)
+- **Conversation buffers**: Maintains separate message history for each contact (100 messages per contact, circular buffer)
+- **Message routing**: recv_thread filters incoming messages
+  - If sender matches current_recipient: display immediately in chat_win
+  - If sender is different: buffer silently, increment unread count
+- **Notification system**: Inline notifications in input prompt show total unreads: `"> (2 new) "`
 - Main thread handles input loop with sticky recipient (use `/chat <name>` to switch, `/quit` to exit)
-- Color-coded messages: green (you), cyan (others), yellow (system), magenta (headers)
+- `/chat <name>` command: switches recipient, loads last 50 messages from buffer, marks as read
+- Color-coded: green (you), cyan (others), yellow (system), magenta (headers)
 - Compiled with `-lpthread -lncurses`
 
 **Shared Header (`common.h`)**
@@ -164,52 +169,155 @@ main (input loop)
 - [x] **Color support** — green for your messages, cyan for others, yellow for system messages, magenta for chat header
 - [x] **Thread-safe rendering** — mutex-protected screen updates
 - [x] **Terminal resize handling** — ignores empty input from resize events
+- [x] **Phase 1: Client-side conversation buffers** — multiple concurrent conversations with message routing
+  - Separate conversation buffer per contact (100 messages, circular buffer)
+  - Messages filtered by sender in recv_thread
+  - Only current conversation displays in chat window
+  - Non-current messages stored silently with unread count
+  - `/chat <name>` loads conversation history (last 50 messages)
+  - Inline notifications show total unreads: `"> (2 new) "`
 
 ---
 
 ## Current Issues & Next Steps
 
-### 1. Message Delivery Problem (Critical)
-**Problem:** If Alice is chatting with Bob, and Connor sends a message to Alice, Connor's message will appear in Alice's chat window even though she's viewing her conversation with Bob. If Connor's messages don't appear immediately, they get dropped entirely because the server doesn't buffer undelivered messages.
+### 1. ~~Message Delivery Problem~~ ✅ SOLVED (Phase 1)
+**Solution implemented:** Client-side conversation buffers with message routing
+
+**What works:**
+- Each contact has dedicated message buffer (100 messages, circular)
+- Messages filtered by sender in `recv_thread`
+- Only current conversation displays in chat window
+- Non-current messages stored silently with unread count
+- Inline notifications show total unreads: `"> (2 new) "`
+- `/chat <name>` loads conversation history (last 50 messages)
+- All messages preserved during client session
+
+**Current limitation:**
+- Messages only buffered while client is running (restart = lost history)
+- Inline notifications show total count, not per-sender breakdown
+
+**Next step:** Phase 2 - Add disk persistence (see #2 below)
+
+### 2. Message Persistence (Phase 2 - Next Priority)
+**Goal:** Save conversation buffers to disk for persistence across restarts
 
 **Current behavior:**
-- Server forwards messages in real-time only if recipient is connected
-- Client displays ALL incoming messages in current chat window, regardless of sender
-- No message queuing or buffering for busy/offline users
-- Messages from non-active conversations get lost
+- Conversation buffers stored in RAM only
+- Client restart = all conversation history lost
+- No way to review old messages from previous sessions
 
-**Requirements:**
-- Server needs minimal message buffering (while staying "dumb" for privacy)
-- Client needs to handle multiple concurrent conversations
-- Undelivered messages shouldn't be dropped
+**Implementation plan:**
+- Create `~/.wsg/chats/` directory on first run
+- On send/receive: append to `~/.wsg/chats/<contact>.log`
+  - Format: `[timestamp] [sender]: body`
+- On `/chat <name>`: load last N messages from file into buffer
+- On startup: optionally load last active conversation
 
-**Potential solutions to explore:**
-1. Server-side: Queue messages per user (encrypted, time-limited buffer)
-2. Client-side: Maintain multiple conversation buffers, background notification system
-3. Hybrid: Server holds encrypted messages, client pulls on demand
+**Benefits:**
+- Conversation history survives restarts
+- Can review messages from days/weeks ago
+- Foundation for search/export features later
 
-### 2. Disconnect message clarity
-When viewing a conversation, disconnect should show `"<username> disconnected"` not generic `"disconnected from server"`
+**Estimated effort:** 2-3 hours
 
-### 3. Message persistence
-Local chat history saved to `~/.wsg/history/<contact>.log` for each conversation (append on send/recv, load on `/chat <name>`)
+### 3. Enhanced Notification Bar (Optional UX Improvement)
+**Current:** Inline notifications in input prompt: `"> (2 new) "`
+**Limitation:** Doesn't show WHO messages are from
 
-### 4. Contact list UI (deferred)
-3-pane layout with contact list on left, arrow key navigation, online status indicators
+**Proposed:** Dedicated 1-line notification window
+```
+┌────────────────────────────────┐
+│ Chat: alice -> bob             │
+│ [bob]: hey                     │
+├────────────────────────────────┤
+│ connor(2) alice(1)             │  ← NEW: shows per-sender unreads
+├────────────────────────────────┤
+│ > _                            │
+└────────────────────────────────┘
+```
 
-### 5. Error handling improvements
-- Handle `send()` failures gracefully
-- Notify sender if recipient not found (server response mechanism needed)
+**Changes needed:**
+- Add `WINDOW *notif_win` (3-window layout)
+- Add `show_notifications()` function
+- Update window sizing (chat: max_y-4, notif: 1 line, input: 3 lines)
+
+**Priority:** Lower (current inline notifications work fine)
+
+### 4. Disconnect Message Clarity
+**Current:** Shows generic `"disconnected from server"` in all cases
+**Desired:** Show `"<username> disconnected"` when specific user goes offline
+
+**Challenge:** Server doesn't currently notify which user disconnected
+**Options:**
+- Track recv errors per conversation
+- Add server-side disconnect notifications (requires protocol change)
+
+### 5. Error Handling Improvements
+- Handle `send()` failures gracefully (currently silent)
+- Notify sender if recipient not found (server currently silently drops)
 - Handle server full (all MAX_CLIENTS slots taken)
+- Better disconnect detection (distinguish server crash vs. user disconnect)
+
+### 6. Contact List UI (Deferred - Lower Priority)
+**Concept:** 4-pane layout with contact list sidebar
+- Shows all known contacts
+- Online/offline status indicators
+- Arrow key navigation to switch conversations
+- Visual indication of unreads
+
+**Why deferred:**
+- Requires server-side "who's online" broadcast (protocol change)
+- Current inline notifications + `/chat` command work well enough
+- Lower priority than persistence and encryption
 
 ---
 
-## Deferred (Future Iterations)
+## Roadmap - Future Phases
 
-- End-to-end encryption (study Signal Protocol: X3DH + Double Ratchet)
-- Offline message queuing
-- Group messaging
-- User authentication / passwords
-- Persistent message history
-- Anonymity / metadata protection
-- TLS for transport security
+### Phase 2: Message Persistence (Next - 2-3 hours)
+**Priority: High** - Needed for practical daily use
+- Save conversations to `~/.wsg/chats/<contact>.log`
+- Load history on `/chat <name>` and on startup
+- Timestamp messages with proper formatting
+- Handle file I/O errors gracefully
+- Optional: `/search <query>` command to search history
+
+### Phase 3: Server-Side Message Queue (Offline Delivery)
+**Priority: Medium** - Solves offline user problem
+**Current limitation:** If recipient is offline when message sent, message is dropped
+
+**Two approaches:**
+- **Option A:** Server queues plaintext messages (simple, but breaks "dumb server" philosophy)
+- **Option B:** Defer until encryption - server queues encrypted blobs it can't read (privacy-preserving)
+
+**Decision:** Defer until Phase 4 (encryption), implement as encrypted queue
+
+### Phase 4: End-to-End Encryption (Complex - Major Project)
+**Priority: High for production use, but requires significant learning**
+- Study Signal Protocol: X3DH (key exchange) + Double Ratchet (forward secrecy)
+- Implement using libsodium for crypto primitives
+- Client-side encryption before sending (server sees only encrypted blobs)
+- Server queues encrypted messages for offline users (can't read them)
+- Key exchange protocol and key management
+- Perfect forward secrecy (past messages safe even if keys compromised)
+
+**Estimated effort:** 10-15 hours (learning + implementation)
+
+### Phase 5: UX & Polish (Ongoing)
+- Better disconnect messages (show username)
+- Enhanced notification bar (per-sender breakdown)
+- `/help` command listing available commands
+- Typing indicators (optional - requires protocol change)
+- Better error messages (recipient not found, connection lost, etc.)
+- Command history (up/down arrow keys)
+
+### Phase 6: Advanced Features (Long-term)
+- Contact list pane (4-window layout with online status)
+- Group messaging (requires protocol redesign)
+- File transfer (encrypted)
+- User authentication / password protection
+- TLS for transport security (in addition to E2E encryption)
+- Anonymity / metadata protection (Tor integration?)
+- Mobile client (different UI, same protocol)
+- Multi-device sync
